@@ -1,0 +1,50 @@
+# FastAPI and API dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+
+# LangChain ecosystem
+langchain==0.1.6
+langchain-openai==0.0.5
+langchain-anthropic==0.1.4
+langgraph==0.0.20
+langsmith==0.0.87
+
+# Vector stores and embeddings
+pgvector==0.2.4
+pinecone-client==3.0.3
+chromadb==0.4.22
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.25
+alembic==1.13.1
+clickhouse-connect==0.7.0
+
+# Temporal workflow
+temporalio==1.5.1
+
+# LiveKit for real-time voice
+livekit==0.12.0
+livekit-agents==0.8.0
+
+# AI/ML
+openai==1.10.0
+anthropic==0.8.1
+tiktoken==0.5.2
+numpy==1.26.3
+scikit-learn==1.4.0
+
+# Redis for caching and queues
+redis==5.0.1
+celery==5.3.6
+
+# Utilities
+python-dotenv==1.0.0
+httpx==0.26.0
+tenacity==8.2.3
+loguru==0.7.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4

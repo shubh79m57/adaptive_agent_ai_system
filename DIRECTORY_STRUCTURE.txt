@@ -1,0 +1,92 @@
+Folder PATH listing
+Volume serial number is D6B9-E151
+D:.
+|   .gitignore
+|   DIRECTORY_STRUCTURE.txt
+|   docker-compose.yml
+|   GETTING_STARTED.md
+|   PROJECT_SUMMARY.md
+|   QUICKSTART.md
+|   README.md
+|   START_HERE.md
+|   
++---agents
++---backend
+|   |   .env.example
+|   |   Dockerfile
+|   |   requirements.txt
+|   |   
+|   +---app
+|   |   |   main.py
+|   |   |   __init__.py
+|   |   |   
+|   |   +---agents
+|   |   |       adaptive_agent.py
+|   |   |       multi_agent_orchestrator.py
+|   |   |       
+|   |   +---api
+|   |   |       agents.py
+|   |   |       analytics.py
+|   |   |       voice.py
+|   |   |       workflows.py
+|   |   |       
+|   |   +---core
+|   |   |       config.py
+|   |   |       
+|   |   +---db
+|   |   +---models
+|   |   +---rag
+|   |   |       retriever.py
+|   |   |       
+|   |   +---services
+|   |   |       analytics_service.py
+|   |   |       memory_service.py
+|   |   |       
+|   |   \---voice
+|   |           livekit_agent.py
+|   |           
+|   +---examples
+|   |       multi_agent_example.py
+|   |       rag_example.py
+|   |       sales_agent_example.py
+|   |       
+|   \---tests
+|           conftest.py
+|           test_agents.py
+|           
++---frontend
+|   |   Dockerfile
+|   |   next.config.js
+|   |   package.json
+|   |   tailwind.config.js
+|   |   tsconfig.json
+|   |   
+|   +---app
+|   |   |   globals.css
+|   |   |   layout.tsx
+|   |   |   page.tsx
+|   |   |   providers.tsx
+|   |   |   
+|   |   +---agents
+|   |   |       page.tsx
+|   |   |       
+|   |   +---analytics
+|   |   |       page.tsx
+|   |   |       
+|   |   +---email
+|   |   |       page.tsx
+|   |   |       
+|   |   \---voice
+|   |           page.tsx
+|   |           
+|   +---components
+|   +---lib
+|   |       api.ts
+|   |       
+|   +---public
+|   \---types
++---shared
+\---workflows
+        temporal_workflows.py
+        worker.py
+        

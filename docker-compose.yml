@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector
+  postgres:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_DB: adaptive_ai_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # ClickHouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=production
+      - POSTGRES_HOST=postgres
+      - REDIS_HOST=redis
+      - CLICKHOUSE_HOST=clickhouse
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+    volumes:
+      - ./backend:/app
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+
+  # Temporal Server (optional)
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+
+  # Temporal Worker (optional)
+  temporal-worker:
+    build:
+      context: ./workflows
+      dockerfile: Dockerfile
+    environment:
+      - TEMPORAL_HOST=temporal
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - temporal
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  clickhouse_data:
