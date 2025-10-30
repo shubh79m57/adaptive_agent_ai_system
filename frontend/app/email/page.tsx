@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import { useMutation } from '@tantml:invoke>
-<parameter name="agentAPI } from '@/lib/api'
+import { useMutation } from '@tanstack/react-query'
+import { agentAPI } from '@/lib/api'
 import { Mail, Send } from 'lucide-react'
 
 export default function EmailPage() {
