@@ -13,7 +13,11 @@ interface VoiceConfig {
 interface VoiceResponse {
   success: boolean;
   transcription?: string;
-  ai_response?: string;
+  ai_response?: string | {
+    text: string;
+    agent_type: string;
+    confidence: number;
+  };
   audio_response?: string;
   note?: string;
   error?: string;
@@ -44,7 +48,7 @@ export default function VoicePage() {
 
   const loadCapabilities = async () => {
     try {
-      const response = await fetch('/api/voice/capabilities');
+      const response = await fetch('http://localhost:8001/voice/capabilities');
       const data = await response.json();
       setCapabilities(data);
     } catch (error) {
@@ -55,7 +59,7 @@ export default function VoicePage() {
   const initializeVoiceAgent = async () => {
     try {
       setIsProcessing(true);
-      const response = await fetch('/api/voice/initialize', {
+      const response = await fetch('http://localhost:8001/voice/initialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(voiceConfig)
@@ -75,18 +79,46 @@ export default function VoicePage() {
     }
   };
 
+  const simpleTest = async () => {
+    setIsProcessing(true);
+    try {
+      console.log('Running simple voice test...');
+      const response = await fetch('http://localhost:8001/voice/simple-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const data = await response.json();
+      console.log('Simple test response:', data);
+      setVoiceResponse(data);
+      
+      if (data.status === 'success') {
+        const newEntry = {
+          timestamp: new Date().toLocaleTimeString(),
+          user_input: data.transcription || '⚡ Quick test',
+          ai_response: typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response || '',
+          has_audio: false
+        };
+        setConversationHistory(prev => [...prev, newEntry]);
+      }
+    } catch (error) {
+      console.error('Simple test error:', error);
+      setVoiceResponse({
+        success: false,
+        error: `Simple test error: ${error}`
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const testWithSampleAudio = async () => {
     setIsProcessing(true);
     try {
-      // Simulate audio processing for demo
-      const response = await fetch('/api/voice/process-audio', {
+      // Test audio processing with sample text
+      const response = await fetch('http://localhost:8001/voice/test-audio', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audio_data: 'mock_audio_data',
-          format: 'wav',
-          config: voiceConfig
-        })
+        headers: { 'Content-Type': 'application/json' }
       });
 
       const data = await response.json();
@@ -96,7 +128,7 @@ export default function VoicePage() {
         const newEntry = {
           timestamp: new Date().toLocaleTimeString(),
           user_input: data.transcription || '🎵 Test audio input',
-          ai_response: data.ai_response || '',
+          ai_response: typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response || '',
           has_audio: !!data.audio_response
         };
         setConversationHistory(prev => [...prev, newEntry]);
@@ -111,9 +143,182 @@ export default function VoicePage() {
     }
   };
 
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        } 
+      });
+      
+      // Try to use WAV format if supported, otherwise fallback to webm
+      const options: MediaRecorderOptions = {};
+      if (MediaRecorder.isTypeSupported('audio/wav')) {
+        options.mimeType = 'audio/wav';
+      } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        options.mimeType = 'audio/webm;codecs=opus';
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        options.mimeType = 'audio/webm';
+      }
+      
+      console.log('Using MIME type:', options.mimeType || 'default');
+      
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        console.log('Audio data chunk received:', event.data.size, 'bytes');
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        console.log('Recording stopped, processing audio...');
+        const mimeType = options.mimeType || 'audio/webm';
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        console.log('Created audio blob:', audioBlob.size, 'bytes, type:', audioBlob.type);
+        await processRecordedAudio(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      // Record in chunks for better compatibility
+      mediaRecorder.start(1000); // 1 second chunks
+      setIsRecording(true);
+      console.log('Recording started...');
+    } catch (error) {
+      console.error('Microphone access error:', error);
+      alert(`Error accessing microphone: ${error}`);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const processRecordedAudio = async (audioBlob: Blob) => {
+    setIsProcessing(true);
+    try {
+      console.log('Processing audio blob:', {
+        size: audioBlob.size,
+        type: audioBlob.type
+      });
+
+      const formData = new FormData();
+      formData.append('audio_file', audioBlob, `recording.${audioBlob.type.includes('wav') ? 'wav' : 'webm'}`);
+
+      console.log('Sending audio to server...');
+      const response = await fetch('http://localhost:8001/voice/process-audio', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await response.json();
+      console.log('Server response:', data);
+      setVoiceResponse(data);
+
+      if (data.status === 'success') {
+        // Check if this is a fallback transcription
+        if (data.debug_info?.is_fallback) {
+          console.warn('⚠️ Received fallback transcription - speech recognition may have failed');
+        }
+        
+        const newEntry = {
+          timestamp: new Date().toLocaleTimeString(),
+          user_input: data.transcription || '🎤 Voice input',
+          ai_response: typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response || '',
+          has_audio: !!data.audio_response
+        };
+        setConversationHistory(prev => [...prev, newEntry]);
+
+        // Play TTS response if available
+        const responseText = typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response;
+        if (responseText) {
+          await playTTSResponse(responseText);
+        }
+      }
+    } catch (error) {
+      console.error('Audio processing error:', error);
+      setVoiceResponse({
+        success: false,
+        error: `Recording processing failed: ${error}`
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const playTTSResponse = async (text: string) => {
+    try {
+      const response = await fetch('http://localhost:8001/voice/text-to-speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        // The TTS engine will play the audio directly on the server
+        // For local PyTTSx3, the audio plays through system speakers
+        console.log('TTS response played:', data.message);
+      }
+    } catch (error) {
+      console.error('TTS playback failed:', error);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessing(true);
+    try {
+      const formData = new FormData();
+      formData.append('audio_file', file);
+
+      const response = await fetch('http://localhost:8001/voice/process-audio', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await response.json();
+      setVoiceResponse(data);
+
+      if (data.status === 'success') {
+        const newEntry = {
+          timestamp: new Date().toLocaleTimeString(),
+          user_input: data.transcription || `📁 ${file.name}`,
+          ai_response: typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response || '',
+          has_audio: !!data.audio_response
+        };
+        setConversationHistory(prev => [...prev, newEntry]);
+
+        // Play TTS response if available
+        const responseText = typeof data.ai_response === 'object' ? data.ai_response.text : data.ai_response;
+        if (responseText) {
+          await playTTSResponse(responseText);
+        }
+      }
+    } catch (error) {
+      setVoiceResponse({
+        success: false,
+        error: `File upload failed: ${error}`
+      });
+    } finally {
+      setIsProcessing(false);
+      // Reset the input
+      event.target.value = '';
+    }
+  };
+
   const clearConversation = async () => {
     try {
-      await fetch('/api/voice/clear-conversation', { method: 'POST' });
+      await fetch('http://localhost:8001/voice/clear-conversation', { method: 'POST' });
       setConversationHistory([]);
       setVoiceResponse(null);
     } catch (error) {
@@ -236,12 +441,33 @@ export default function VoicePage() {
       <div className="bg-white rounded-lg shadow-md p-6 mb-6">
         <h2 className="text-xl font-semibold mb-4">🎙️ Voice Controls</h2>
         <div className="flex flex-wrap gap-4 mb-4">
+          {/* Microphone Recording Button */}
+          <button
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={isProcessing}
+            className={`px-6 py-3 text-white rounded-lg font-medium transition-colors ${
+              isRecording 
+                ? 'bg-red-500 hover:bg-red-600 animate-pulse' 
+                : 'bg-blue-500 hover:bg-blue-600'
+            } disabled:bg-gray-400`}
+          >
+            {isRecording ? '🔴 Stop Recording' : '🎤 Start Recording'}
+          </button>
+
           <button
             onClick={testWithSampleAudio}
             disabled={isProcessing}
             className="px-6 py-3 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-400"
           >
             {isProcessing ? 'Processing...' : '🎵 Test Voice AI'}
+          </button>
+
+          <button
+            onClick={simpleTest}
+            disabled={isProcessing}
+            className="px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-400"
+          >
+            ⚡ Quick Test
           </button>
           
           <button
@@ -250,6 +476,39 @@ export default function VoicePage() {
           >
             🗑️ Clear History
           </button>
+        </div>
+
+        {isRecording && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+            <div className="flex items-center">
+              <div className="animate-pulse w-3 h-3 bg-red-500 rounded-full mr-3"></div>
+              <span className="text-red-700 font-medium">🎙️ Recording... Speak now!</span>
+            </div>
+            <p className="text-sm text-red-600 mt-2">Click "Stop Recording" when you're done speaking.</p>
+          </div>
+        )}
+
+        {/* Audio File Upload */}
+        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+          <input
+            type="file"
+            accept="audio/*"
+            onChange={handleFileUpload}
+            disabled={isProcessing}
+            className="hidden"
+            id="audio-upload"
+          />
+          <label
+            htmlFor="audio-upload"
+            className={`cursor-pointer inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 ${
+              isProcessing ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            📁 Upload Audio File
+          </label>
+          <p className="text-sm text-gray-500 mt-2">
+            Upload .wav, .mp3, .m4a, or other audio files for processing
+          </p>
         </div>
         
         {isProcessing && (
@@ -275,7 +534,17 @@ export default function VoicePage() {
               {voiceResponse.ai_response && (
                 <div className="mb-4">
                   <h3 className="font-medium text-gray-700">🤖 AI Response:</h3>
-                  <p className="bg-green-50 p-3 rounded-lg">{voiceResponse.ai_response}</p>
+                  <p className="bg-green-50 p-3 rounded-lg">
+                    {typeof voiceResponse.ai_response === 'object' 
+                      ? voiceResponse.ai_response.text 
+                      : voiceResponse.ai_response}
+                  </p>
+                  {typeof voiceResponse.ai_response === 'object' && (
+                    <div className="text-xs text-gray-500 mt-2">
+                      Agent: {voiceResponse.ai_response.agent_type} | 
+                      Confidence: {(voiceResponse.ai_response.confidence * 100).toFixed(0)}%
+                    </div>
+                  )}
                 </div>
               )}
               {voiceResponse.note && (

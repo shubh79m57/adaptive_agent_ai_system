@@ -136,7 +136,10 @@ class VoiceAIAgent:
             Dict with transcription, AI response, and audio response
         """
         try:
+            logger.info(f"Starting audio processing, audio size: {len(audio_data)} bytes")
+            
             # Step 1: Convert audio to text
+            logger.info("Step 1: Converting audio to text...")
             transcription = await self._speech_to_text(audio_data)
             if not transcription:
                 return {"error": "Could not transcribe audio"}
@@ -144,9 +147,11 @@ class VoiceAIAgent:
             logger.info(f"Transcribed: {transcription}")
             
             # Step 2: Get AI response
+            logger.info("Step 2: Getting AI response...")
             ai_response = await self._get_ai_response(transcription)
             
             # Step 3: Convert response to speech
+            logger.info("Step 3: Converting response to speech...")
             audio_response = await self._text_to_speech(ai_response['text'])
             
             # Step 4: Update conversation history
@@ -158,6 +163,7 @@ class VoiceAIAgent:
                 "ai_audio": len(audio_response) if audio_response else 0
             })
             
+            logger.info("Audio processing completed successfully")
             return {
                 "success": True,
                 "transcription": transcription,
@@ -173,37 +179,92 @@ class VoiceAIAgent:
     async def _speech_to_text(self, audio_data: bytes) -> Optional[str]:
         """Convert audio to text using configured STT provider"""
         
+        logger.info(f"Starting STT with provider: {self.stt_provider}")
+        
         if self.stt_provider == 'whisper' and WHISPER_AVAILABLE:
             try:
-                # Save audio to temporary file for Whisper
-                audio_io = io.BytesIO(audio_data)
+                logger.info("Processing audio with Whisper...")
                 
-                # Load audio with librosa if available, otherwise use wave
-                if AUDIO_LIBS_AVAILABLE:
-                    audio_array, sr = librosa.load(audio_io, sr=self.sample_rate)
+                # Try to process audio directly with Whisper first
+                try:
+                    import tempfile
+                    import os
                     
-                    # Save as temporary file for Whisper
-                    temp_path = "/tmp/temp_audio.wav"
-                    sf.write(temp_path, audio_array, self.sample_rate)
+                    # Save raw audio data to temporary file
+                    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as temp_file:
+                        temp_file.write(audio_data)
+                        temp_path = temp_file.name
                     
-                    # Transcribe with Whisper
+                    logger.info(f"Saved raw audio to: {temp_path}")
+                    
+                    # Try Whisper directly on the file
+                    logger.info("Starting Whisper transcription...")
                     result = self.whisper_model.transcribe(temp_path)
-                    return result["text"].strip()
+                    transcription = result["text"].strip()
+                    
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+                    
+                    if transcription and len(transcription) > 2:
+                        logger.info(f"Whisper transcription successful: {transcription}")
+                        return transcription
+                    else:
+                        logger.warning("Whisper returned empty or very short transcription")
+                
+                except Exception as whisper_error:
+                    logger.error(f"Direct Whisper processing failed: {whisper_error}")
+                    
+                    # Fallback: Try with audio conversion using librosa
+                    if AUDIO_LIBS_AVAILABLE:
+                        try:
+                            logger.info("Trying audio conversion fallback...")
+                            audio_io = io.BytesIO(audio_data)
+                            audio_array, sr = librosa.load(audio_io, sr=self.sample_rate)
+                            
+                            # Save as WAV for Whisper
+                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                                temp_path = temp_file.name
+                            
+                            sf.write(temp_path, audio_array, self.sample_rate)
+                            logger.info(f"Converted audio saved to: {temp_path}")
+                            
+                            # Transcribe with Whisper
+                            result = self.whisper_model.transcribe(temp_path)
+                            transcription = result["text"].strip()
+                            
+                            # Clean up temp file
+                            try:
+                                os.unlink(temp_path)
+                            except:
+                                pass
+                            
+                            if transcription and len(transcription) > 2:
+                                logger.info(f"Whisper transcription (converted) successful: {transcription}")
+                                return transcription
+                                
+                        except Exception as conversion_error:
+                            logger.error(f"Audio conversion fallback failed: {conversion_error}")
                 
             except Exception as e:
                 logger.error(f"Whisper STT error: {e}")
                 
         if self.stt_provider == 'google' and SPEECH_RECOGNITION_AVAILABLE:
             try:
+                logger.info("Processing audio with Google Speech Recognition...")
                 audio_io = io.BytesIO(audio_data)
                 with sr.AudioFile(audio_io) as source:
                     audio = self.recognizer.record(source)
                     text = self.recognizer.recognize_google(audio)
+                    logger.info(f"Google STT completed: {text}")
                     return text
             except Exception as e:
                 logger.error(f"Google STT error: {e}")
         
         # Fallback: return a mock transcription for testing
+        logger.warning("All STT methods failed, using fallback transcription")
         return "Hello, I need assistance with my business."
     
     async def _get_ai_response(self, user_text: str) -> Dict[str, Any]:

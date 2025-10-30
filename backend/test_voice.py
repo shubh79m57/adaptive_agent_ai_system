@@ -76,12 +76,9 @@ def test_voice_ai_agent():
         agent = VoiceAIAgent(config)
         print("✅ VoiceAIAgent created successfully")
         
-        # Test conversation history (method that exists)
-        history = agent.get_conversation_history()
-        print(f"✅ Voice conversation history: {len(history)} entries")
-        
-        # Test config access
-        print(f"✅ Voice config - STT: {agent.stt_provider}, TTS: {agent.tts_provider}")
+        # Test capabilities
+        capabilities = agent.get_capabilities()
+        print(f"✅ Voice capabilities: {capabilities}")
         
         return True
     except Exception as e:
