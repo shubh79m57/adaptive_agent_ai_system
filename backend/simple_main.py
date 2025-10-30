@@ -1,8 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import the agents API
+# Import the API routers
 from app.api import agents
+try:
+    from app.api import voice
+    VOICE_API_AVAILABLE = True
+except ImportError:
+    VOICE_API_AVAILABLE = False
+    print("Voice API not available")
 
 app = FastAPI(
     title="Adaptive AI Agent System - Local AI",
@@ -21,6 +27,10 @@ app.add_middleware(
 
 # Include the agents router
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
+
+# Include voice router if available
+if VOICE_API_AVAILABLE:
+    app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
 
 @app.get("/")
 async def root():

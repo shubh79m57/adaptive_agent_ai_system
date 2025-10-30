@@ -1,13 +1,53 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+"""
+Voice AI API endpoints for real-time voice processing
+"""
 
-from app.voice.livekit_agent import LiveKitVoiceAgent, VoiceCallRecorder
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
+import json
+import base64
+
+# Import voice components
+try:
+    from ..voice.voice_ai_agent import create_voice_agent, VoiceAIAgent
+    from ..voice.livekit_agent import LiveKitVoiceAssistant, LiveKitVoiceAgent
+    VOICE_AVAILABLE = True
+except ImportError:
+    VOICE_AVAILABLE = False
+    print("Voice components not available")
 
 router = APIRouter()
 
-voice_agent = LiveKitVoiceAgent()
-recorder = VoiceCallRecorder()
+class VoiceConfigRequest(BaseModel):
+    stt_provider: Optional[str] = "whisper"  # whisper, google, azure
+    tts_provider: Optional[str] = "pyttsx3"  # pyttsx3, elevenlabs, azure
+    ai_model: Optional[str] = "local"  # local, openai, anthropic
+    sample_rate: Optional[int] = 16000
+    voice_id: Optional[str] = "alloy"
+
+class AudioProcessRequest(BaseModel):
+    audio_data: str  # Base64 encoded audio
+    format: Optional[str] = "wav"
+    config: Optional[VoiceConfigRequest] = None
+
+class LiveKitRoomRequest(BaseModel):
+    room_name: str
+    participant_name: str
+    config: Optional[VoiceConfigRequest] = None
+
+# Legacy models for backward compatibility
+class RoomCreateRequest(BaseModel):
+    room_name: str
+
+class TokenRequest(BaseModel):
+    room_name: str
+    participant_identity: str
+
+# Global voice agent instances
+voice_agent: Optional[VoiceAIAgent] = None
+livekit_assistant: Optional[LiveKitVoiceAssistant] = None
+legacy_voice_agent = LiveKitVoiceAgent() if VOICE_AVAILABLE else None
 
 
 class CreateRoomRequest(BaseModel):
