@@ -28,6 +28,7 @@ app.add_middleware(
 
 # Global voice agent instance
 voice_agent = None
+last_audio_response = None  # Store last generated audio
 
 @app.on_event("startup")
 async def startup_event():
@@ -127,6 +128,42 @@ async def initialize_voice_agent(config: dict):
             "error": f"Initialization failed: {str(e)}"
         }
 
+@app.post("/voice/process-audio-simple")
+async def process_audio_simple(audio_file: UploadFile = File(...)):
+    """Simple audio processing without complex conversion - for testing"""
+    try:
+        print(f"📥 Received audio file: {audio_file.filename}")
+        print(f"📊 Content type: {audio_file.content_type}")
+        
+        # Read the audio file
+        audio_data = await audio_file.read()
+        print(f"📊 Audio data size: {len(audio_data)} bytes")
+        
+        # For now, just return a success response with basic info
+        return {
+            "status": "success",
+            "transcription": "Test transcription - audio received successfully",
+            "ai_response": {
+                "text": "I received your audio file successfully. The audio processing system is working.",
+                "agent_type": "test",
+                "confidence": 1.0
+            },
+            "conversation_length": 1,
+            "debug_info": {
+                "audio_size": len(audio_data),
+                "content_type": audio_file.content_type,
+                "is_fallback": False,
+                "stt_provider": "test"
+            }
+        }
+        
+    except Exception as e:
+        print(f"❌ Simple processing error: {str(e)}")
+        return {
+            "status": "error",
+            "error": f"Simple audio processing failed: {str(e)}"
+        }
+
 @app.post("/voice/process-audio")
 async def process_audio(audio_file: UploadFile = File(...)):
     """Process an audio file and return AI response"""
@@ -187,27 +224,86 @@ async def process_audio(audio_file: UploadFile = File(...)):
             # Restore original provider
             voice_agent.stt_provider = original_provider
         
-        print(f"✅ Processing result: {result}")
+        # Log result without binary audio data
+        result_summary = {k: v for k, v in result.items() if k != 'audio_response'}
+        print(f"✅ Processing result: {result_summary}")
+        
+        # Check for error in result
+        if "error" in result:
+            print(f"❌ Processing returned error: {result['error']}")
+            return {
+                "status": "error",
+                "error": result["error"],
+                "transcription": "",
+                "ai_response": None,
+                "conversation_length": 0,
+                "debug_info": {
+                    "audio_size": len(audio_data),
+                    "content_type": audio_file.content_type,
+                    "stt_provider": "google"
+                }
+            }
         
         # Check if we got a real transcription or fallback
         transcription = result.get("transcription", "")
+        
+        # Additional check: if transcription is empty or None
+        if not transcription:
+            print("⚠️ Got empty transcription - STT failed")
+            return {
+                "status": "error",
+                "error": "Could not transcribe audio - no speech detected or audio quality too low",
+                "transcription": "",
+                "ai_response": None,
+                "conversation_length": 0,
+                "debug_info": {
+                    "audio_size": len(audio_data),
+                    "content_type": audio_file.content_type,
+                    "stt_provider": "google"
+                }
+            }
+        
         is_fallback = transcription == "Hello, I need assistance with my business."
         
         if is_fallback:
             print("⚠️ Got fallback transcription - STT may have failed")
         
-        return {
+        # Get audio response if available
+        audio_response = result.get("audio_response")
+        if audio_response:
+            print(f"🔊 Audio response generated: {len(audio_response)} bytes")
+            
+            # Store globally for GET endpoint
+            global last_audio_response
+            last_audio_response = audio_response
+            
+            # Convert to base64 for JSON response
+            import base64
+            print("🔄 Encoding audio to base64...")
+            audio_response_b64 = base64.b64encode(audio_response).decode('utf-8')
+            print(f"✅ Base64 encoded: {len(audio_response_b64)} characters")
+        else:
+            print("⚠️ No audio response generated")
+            audio_response_b64 = None
+        
+        print("📤 Preparing response...")
+        response_data = {
             "status": "success",
             "transcription": transcription,
             "ai_response": result.get("ai_response"),
+            "audio_response": audio_response_b64,  # Include audio response
             "conversation_length": len(voice_agent.get_conversation_history()),
             "debug_info": {
                 "audio_size": len(audio_data),
                 "content_type": audio_file.content_type,
                 "is_fallback": is_fallback,
-                "stt_provider": "google"
+                "stt_provider": "google",
+                "has_audio_response": audio_response is not None,
+                "audio_response_size": len(audio_response) if audio_response else 0
             }
         }
+        print("✅ Returning response")
+        return response_data
         
     except Exception as e:
         print(f"❌ Processing error: {str(e)}")
@@ -228,32 +324,83 @@ async def process_audio(audio_file: UploadFile = File(...)):
 
 @app.post("/voice/text-to-speech")
 async def text_to_speech(request: dict):
-    """Convert text to speech"""
+    """Convert text to speech and return audio file"""
+    print(f"🎤 Received TTS request: {request}")
+    
+    # Check if we have a cached audio response from recent request
+    global last_audio_response
+    if last_audio_response:
+        print(f"✅ Using cached audio response: {len(last_audio_response)} bytes")
+        from fastapi.responses import Response
+        return Response(
+            content=last_audio_response,
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "inline; filename=response.wav",
+                "Content-Length": str(len(last_audio_response)),
+                "Access-Control-Allow-Origin": "*"
+            }
+        )
+    
     if not voice_agent:
+        print("❌ Voice agent not available")
         raise HTTPException(status_code=503, detail="Voice AI not available")
     
     text = request.get("text", "")
     if not text:
+        print("❌ No text provided")
         raise HTTPException(status_code=400, detail="Text is required")
     
     try:
-        audio_data = await voice_agent._text_to_speech(text)
+        print(f"🔊 TTS request for: '{text[:50]}...'")
         
-        if audio_data:
-            return {
-                "status": "success",
-                "message": "Text converted to speech",
-                "audio_length": len(audio_data) if audio_data else 0
-            }
+        # Try to generate audio with timeout
+        import asyncio
+        audio_data = None
+        
+        try:
+            audio_data = await asyncio.wait_for(
+                voice_agent._text_to_speech(text),
+                timeout=5.0  # 5 second timeout
+            )
+        except asyncio.TimeoutError:
+            print("⚠️ TTS timed out, returning text-only response")
+        except Exception as tts_error:
+            print(f"⚠️ TTS generation error: {tts_error}")
+        
+        # If we have audio, return it
+        if audio_data and len(audio_data) > 0:
+            print(f"✅ Generated {len(audio_data)} bytes of audio")
+            from fastapi.responses import Response
+            return Response(
+                content=audio_data,
+                media_type="audio/wav",
+                headers={
+                    "Content-Disposition": "inline; filename=response.wav",
+                    "Content-Length": str(len(audio_data)),
+                    "Access-Control-Allow-Origin": "*"
+                }
+            )
         else:
+            # Return a JSON response indicating no audio available
+            print("⚠️ No audio generated, returning text-only")
             return {
-                "status": "success",
-                "message": "Text processed (TTS engine played audio directly)",
-                "audio_length": 0
+                "status": "text_only",
+                "message": "TTS not available",
+                "text": text
             }
             
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
+        print(f"❌ TTS endpoint error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Return text-only response instead of error
+        return {
+            "status": "error",
+            "message": "TTS failed",
+            "text": text,
+            "error": str(e)
+        }
 
 @app.post("/voice/simple-test")
 async def simple_voice_test():
@@ -280,6 +427,25 @@ async def simple_voice_test():
             "status": "error", 
             "error": f"Simple test failed: {str(e)}"
         }
+
+@app.get("/voice/get-audio-response")
+async def get_audio_response():
+    """Get the last generated audio response as a WAV file"""
+    global last_audio_response
+    
+    if not last_audio_response:
+        raise HTTPException(status_code=404, detail="No audio response available")
+    
+    from fastapi.responses import Response
+    return Response(
+        content=last_audio_response,
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": "inline; filename=ai_response.wav",
+            "Content-Length": str(len(last_audio_response)),
+            "Cache-Control": "no-cache"
+        }
+    )
 
 @app.post("/voice/test-audio")
 async def test_audio_processing():
