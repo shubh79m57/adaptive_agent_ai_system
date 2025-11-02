@@ -56,6 +56,22 @@ webrtcvad==2.0.10
 pydub==0.25.1
 wave
 
+# Audio processing dependencies (added for voice features)
+audioop-lts==0.2.2
+soxr==1.0.0
+pooch==1.8.2
+numba==0.62.1
+llvmlite==0.45.1
+standard-aifc==3.13.0
+standard-sunau==3.13.0
+standard-chunk==3.13.0
+audioread==3.1.0
+
+# Windows-specific (pyttsx3 dependencies)
+comtypes==1.4.13
+pypiwin32==223
+pywin32==310
+
 # Utilities
 python-dotenv==1.0.0
 httpx==0.26.0
