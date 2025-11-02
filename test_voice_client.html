@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice AI Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            background: #e9ecef;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        #transcript {
+            margin: 15px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            min-height: 50px;
+        }
+        #response {
+            margin: 15px 0;
+            padding: 15px;
+            background: #e7f3ff;
+            border-left: 4px solid #28a745;
+            min-height: 50px;
+        }
+        .recording {
+            background: #ff4444 !important;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        audio {
+            width: 100%;
+            margin: 15px 0;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Voice AI Test Client</h1>
+        
+        <div class="status" id="status">
+            Ready to test voice AI
+        </div>
+
+        <div>
+            <button id="recordBtn" onclick="startRecording()">🎤 Start Recording</button>
+            <button id="stopBtn" onclick="stopRecording()" disabled>⏹️ Stop Recording</button>
+            <button onclick="testTTS()">🔊 Test TTS</button>
+            <button onclick="checkHealth()">💚 Check Server</button>
+        </div>
+
+        <div>
+            <h3>📝 Your Speech:</h3>
+            <div id="transcript">Waiting for audio...</div>
+        </div>
+
+        <div>
+            <h3>🤖 AI Response:</h3>
+            <div id="response">Waiting for response...</div>
+        </div>
+
+        <div id="audioContainer" style="display:none;">
+            <h3>🔊 Audio Response:</h3>
+            <audio id="audioPlayer" controls></audio>
+        </div>
+
+        <details>
+            <summary style="cursor: pointer; padding: 10px; background: #f0f0f0; margin: 15px 0;">
+                🔍 Debug Information
+            </summary>
+            <pre id="debug"></pre>
+        </details>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8001';
+        let mediaRecorder;
+        let audioChunks = [];
+
+        async function checkHealth() {
+            updateStatus('Checking server health...', 'info');
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                updateStatus(`✅ Server is healthy! Voice AI: ${data.voice_ai_ready ? 'Ready' : 'Not Ready'}`, 'success');
+                updateDebug(data);
+            } catch (error) {
+                updateStatus(`❌ Server error: ${error.message}`, 'error');
+            }
+        }
+
+        async function startRecording() {
+            try {
+                updateStatus('🎤 Requesting microphone access...', 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+                
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    updateStatus('🔄 Processing audio...', 'info');
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await processAudio(audioBlob);
+                };
+
+                mediaRecorder.start();
+                document.getElementById('recordBtn').disabled = true;
+                document.getElementById('recordBtn').classList.add('recording');
+                document.getElementById('stopBtn').disabled = false;
+                updateStatus('🔴 Recording... Speak now!', 'info');
+
+            } catch (error) {
+                updateStatus(`❌ Microphone error: ${error.message}`, 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                document.getElementById('recordBtn').disabled = false;
+                document.getElementById('recordBtn').classList.remove('recording');
+                document.getElementById('stopBtn').disabled = true;
+                updateStatus('⏹️ Recording stopped, processing...', 'info');
+            }
+        }
+
+        async function processAudio(audioBlob) {
+            const formData = new FormData();
+            formData.append('audio_file', audioBlob, 'recording.webm');
+
+            try {
+                updateStatus('🚀 Sending audio to server...', 'info');
+                console.log('Audio blob size:', audioBlob.size, 'bytes');
+
+                const response = await fetch(`${API_URL}/voice/process-audio`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                console.log('Server response:', result);
+                updateDebug(result);
+
+                if (result.status === 'success') {
+                    document.getElementById('transcript').textContent = result.transcription || 'No transcription';
+                    document.getElementById('response').textContent = result.ai_response?.text || 'No response';
+
+                    // Handle audio response
+                    if (result.audio_response) {
+                        console.log('Audio response received, length:', result.audio_response.length);
+                        playAudioResponse(result.audio_response);
+                        updateStatus('✅ Success! Playing audio response...', 'success');
+                    } else {
+                        console.log('No audio response in result');
+                        updateStatus('✅ Success! (No audio response)', 'success');
+                    }
+                } else {
+                    updateStatus(`⚠️ ${result.error || 'Processing failed'}`, 'error');
+                }
+
+            } catch (error) {
+                updateStatus(`❌ Error: ${error.message}`, 'error');
+                console.error('Processing error:', error);
+            }
+        }
+
+        function playAudioResponse(base64Audio) {
+            try {
+                console.log('Decoding base64 audio...');
+                const audioData = atob(base64Audio);
+                const arrayBuffer = new ArrayBuffer(audioData.length);
+                const uint8Array = new Uint8Array(arrayBuffer);
+                
+                for (let i = 0; i < audioData.length; i++) {
+                    uint8Array[i] = audioData.charCodeAt(i);
+                }
+
+                const blob = new Blob([uint8Array], { type: 'audio/wav' });
+                const url = URL.createObjectURL(blob);
+                
+                console.log('Audio blob created, size:', blob.size, 'bytes');
+                console.log('Audio URL:', url);
+
+                const audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = url;
+                document.getElementById('audioContainer').style.display = 'block';
+                
+                // Auto-play the audio
+                audioPlayer.play().then(() => {
+                    console.log('Audio playback started successfully');
+                }).catch(err => {
+                    console.error('Audio playback error:', err);
+                    updateStatus(`⚠️ Audio received but autoplay blocked. Click play button.`, 'info');
+                });
+
+            } catch (error) {
+                console.error('Error playing audio:', error);
+                updateStatus(`❌ Error playing audio: ${error.message}`, 'error');
+            }
+        }
+
+        async function testTTS() {
+            updateStatus('🔊 Testing Text-to-Speech...', 'info');
+            try {
+                const response = await fetch(`${API_URL}/voice/generate-speech`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: 'Hello! This is a test of the text to speech system. Can you hear me clearly?'
+                    })
+                });
+
+                if (response.ok) {
+                    const contentType = response.headers.get('content-type');
+                    
+                    if (contentType && contentType.includes('audio')) {
+                        // Direct audio response
+                        const audioBlob = await response.blob();
+                        const url = URL.createObjectURL(audioBlob);
+                        const audioPlayer = document.getElementById('audioPlayer');
+                        audioPlayer.src = url;
+                        document.getElementById('audioContainer').style.display = 'block';
+                        audioPlayer.play();
+                        updateStatus('✅ TTS test successful! Playing audio...', 'success');
+                    } else {
+                        // JSON response with base64 audio
+                        const result = await response.json();
+                        if (result.audio_response) {
+                            playAudioResponse(result.audio_response);
+                            updateStatus('✅ TTS test successful! Playing audio...', 'success');
+                        } else if (result.text) {
+                            updateStatus(`⚠️ TTS not available. Text response: ${result.text}`, 'info');
+                        }
+                    }
+                } else {
+                    updateStatus(`❌ TTS test failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                updateStatus(`❌ TTS error: ${error.message}`, 'error');
+            }
+        }
+
+        function updateStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        function updateDebug(data) {
+            document.getElementById('debug').textContent = JSON.stringify(data, null, 2);
+        }
+
+        // Check server on load
+        window.onload = () => {
+            checkHealth();
+        };
+    </script>
+</body>
+</html>

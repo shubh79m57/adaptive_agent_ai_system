@@ -116,8 +116,13 @@ class VoiceAIAgent:
             self.recognizer.dynamic_energy_ratio = 1.5
             self.recognizer.pause_threshold = 0.8  # Seconds of non-speaking audio before phrase is considered complete
             
-            self.microphone = sr.Microphone()
-            logger.info("Google Speech Recognition initialized with optimized settings")
+            # Only initialize microphone if PyAudio is available (not required for file-based STT)
+            try:
+                self.microphone = sr.Microphone()
+                logger.info("Google Speech Recognition initialized with microphone support")
+            except (AttributeError, OSError) as e:
+                logger.info(f"Microphone not available (PyAudio not installed), using file-based STT only: {e}")
+                self.microphone = None
         
         if self.stt_provider == 'whisper' and WHISPER_AVAILABLE:
             try:
@@ -635,13 +640,27 @@ class VoiceAIAgent:
                     
                     logger.debug(f"🔊 Saving speech to: {temp_path}")
                     
-                    # Run TTS in executor to prevent blocking
+                    # Run TTS in executor to prevent blocking with timeout
                     logger.debug("Starting TTS in thread pool executor...")
                     loop = asyncio.get_event_loop()
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        logger.debug("Submitting TTS task to executor...")
-                        success = await loop.run_in_executor(executor, generate_speech, temp_engine, text, temp_path)
-                        logger.debug(f"TTS task completed, success: {success}")
+                    
+                    try:
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            logger.debug("Submitting TTS task to executor...")
+                            # Add 10 second timeout for TTS generation
+                            success = await asyncio.wait_for(
+                                loop.run_in_executor(executor, generate_speech, temp_engine, text, temp_path),
+                                timeout=10.0
+                            )
+                            logger.debug(f"TTS task completed, success: {success}")
+                    except asyncio.TimeoutError:
+                        logger.error("❌ TTS generation timed out after 10 seconds")
+                        # Try to clean up
+                        try:
+                            temp_engine.stop()
+                        except:
+                            pass
+                        return None
                     
                     if not success:
                         logger.error("TTS generation failed in executor")

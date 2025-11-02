@@ -41,9 +41,26 @@ export default function VoicePage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  
+  const [isAISpeaking, setIsAISpeaking] = useState(false);
 
   useEffect(() => {
     loadCapabilities();
+    
+    // Setup audio visualization when component mounts
+    return () => {
+      // Cleanup on unmount
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+    };
   }, []);
 
   const loadCapabilities = async () => {
@@ -145,126 +162,63 @@ export default function VoicePage() {
 
   const startRecording = async () => {
     try {
+      console.log('🎤 Starting recording...');
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 16000,  // Use 16kHz for better speech recognition
-          channelCount: 1,    // Mono audio
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         } 
       });
       
-      // Use Web Audio API to convert to WAV format
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      // Use MediaRecorder for more reliable recording
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm' // Most browsers support this
+      });
       
-      const audioChunks: Float32Array[] = [];
+      const audioChunks: Blob[] = [];
       
-      processor.onaudioprocess = (event) => {
-        const inputData = event.inputBuffer.getChannelData(0);
-        audioChunks.push(new Float32Array(inputData));
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+          console.log('📦 Audio chunk received:', event.data.size, 'bytes');
+        }
       };
       
-      source.connect(processor);
-      processor.connect(audioContext.destination);
+      mediaRecorder.onstop = async () => {
+        console.log('⏹️ Recording stopped, processing...');
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        console.log('🎵 Total audio size:', audioBlob.size, 'bytes');
+        
+        // Clean up stream
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Process the recorded audio
+        await processRecordedAudio(audioBlob);
+      };
       
-      console.log('✅ Recording started with Web Audio API (16kHz mono WAV)');
+      mediaRecorder.start();
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = audioChunks;
+      
+      console.log('✅ Recording started with MediaRecorder');
       setIsRecording(true);
       
-      // Store references for stopping
-      (window as any).audioContext = audioContext;
-      (window as any).audioChunks = audioChunks;
-      (window as any).audioStream = stream;
-      
     } catch (error) {
-      console.error('Microphone access error:', error);
+      console.error('❌ Microphone access error:', error);
       alert(`Error accessing microphone: ${error}`);
     }
   };
 
   const stopRecording = async () => {
-    if (!isRecording) return;
+    if (!isRecording || !mediaRecorderRef.current) return;
     
+    console.log('🛑 Stopping recording...');
     setIsRecording(false);
     
-    try {
-      // Get audio data from Web Audio API
-      const audioChunks = (window as any).audioChunks;
-      const audioContext = (window as any).audioContext;
-      const stream = (window as any).audioStream;
-      
-      if (!audioChunks || audioChunks.length === 0) {
-        console.error('No audio data recorded');
-        return;
-      }
-      
-      // Combine all audio chunks
-      const totalLength = audioChunks.reduce((acc: number, chunk: Float32Array) => acc + chunk.length, 0);
-      const combinedAudio = new Float32Array(totalLength);
-      let offset = 0;
-      
-      for (const chunk of audioChunks) {
-        combinedAudio.set(chunk, offset);
-        offset += chunk.length;
-      }
-      
-      console.log(`🎵 Recorded ${combinedAudio.length} audio samples`);
-      
-      // Convert Float32Array to WAV format
-      const wavBuffer = float32ArrayToWav(combinedAudio, 16000);
-      const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-      
-      console.log(`✅ Created WAV blob: ${wavBlob.size} bytes`);
-      
-      // Clean up
-      stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-      audioContext.close();
-      
-      // Process the WAV audio
-      await processRecordedAudio(wavBlob);
-      
-    } catch (error) {
-      console.error('Error stopping recording:', error);
+    if (mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
     }
-  };
-
-  // Helper function to convert Float32Array to WAV format
-  const float32ArrayToWav = (float32Array: Float32Array, sampleRate: number): ArrayBuffer => {
-    const length = float32Array.length;
-    const buffer = new ArrayBuffer(44 + length * 2);
-    const view = new DataView(buffer);
-    
-    // WAV header
-    const writeString = (offset: number, string: string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-      }
-    };
-    
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, 'data');
-    view.setUint32(40, length * 2, true);
-    
-    // Convert float samples to 16-bit PCM
-    let offset = 44;
-    for (let i = 0; i < length; i++) {
-      const sample = Math.max(-1, Math.min(1, float32Array[i]));
-      view.setInt16(offset, sample * 0x7FFF, true);
-      offset += 2;
-    }
-    
-    return buffer;
   };
 
   const processRecordedAudio = async (audioBlob: Blob) => {
@@ -319,22 +273,220 @@ export default function VoicePage() {
     }
   };
 
+  const setupAudioVisualization = (audioElement: HTMLAudioElement) => {
+    try {
+      // Create audio context if it doesn't exist
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+
+      // Create analyser node
+      if (!analyserRef.current) {
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+      }
+
+      // Connect audio element to analyser
+      const source = audioContextRef.current.createMediaElementSource(audioElement);
+      source.connect(analyserRef.current);
+      analyserRef.current.connect(audioContextRef.current.destination);
+
+      // Start visualization
+      visualizeAudio();
+    } catch (error) {
+      console.error('Error setting up audio visualization:', error);
+    }
+  };
+
+  const visualizeAudio = () => {
+    if (!analyserRef.current || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const draw = () => {
+      animationFrameRef.current = requestAnimationFrame(draw);
+
+      analyserRef.current!.getByteFrequencyData(dataArray);
+
+      // Set canvas size
+      const width = canvas.width;
+      const height = canvas.height;
+
+      // Clear canvas with gradient background
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, '#1a1a2e');
+      gradient.addColorStop(1, '#0f3460');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+
+      // Draw frequency bars
+      const barWidth = (width / bufferLength) * 2.5;
+      let barHeight;
+      let x = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        barHeight = (dataArray[i] / 255) * height * 0.8;
+
+        // Create gradient for bars
+        const barGradient = ctx.createLinearGradient(0, height - barHeight, 0, height);
+        barGradient.addColorStop(0, '#00d4ff');
+        barGradient.addColorStop(0.5, '#0ea5e9');
+        barGradient.addColorStop(1, '#3b82f6');
+
+        ctx.fillStyle = barGradient;
+        ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+
+        // Add glow effect
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#00d4ff';
+
+        x += barWidth + 1;
+      }
+
+      // Reset shadow
+      ctx.shadowBlur = 0;
+    };
+
+    draw();
+  };
+
+  const stopVisualization = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
+    // Clear canvas
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
+    }
+  };
+
   const playTTSResponse = async (text: string) => {
     try {
+      console.log('🔊 Requesting TTS for:', text);
+      
+      // Check if audio element exists
+      if (!audioRef.current) {
+        console.error('❌ Audio element not found!');
+        return;
+      }
+      
       const response = await fetch('http://localhost:8001/voice/text-to-speech', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text })
       });
 
-      const data = await response.json();
-      if (data.status === 'success') {
-        // The TTS engine will play the audio directly on the server
-        // For local PyTTSx3, the audio plays through system speakers
-        console.log('TTS response played:', data.message);
+      console.log('📡 Response status:', response.status);
+      const contentType = response.headers.get('content-type');
+      console.log('📄 Content-Type:', contentType);
+      
+      if (contentType && contentType.includes('audio')) {
+        // Direct audio response
+        console.log('📥 Received direct audio response');
+        const audioBlob = await response.blob();
+        console.log('🎵 Audio blob size:', audioBlob.size, 'bytes');
+        const audioUrl = URL.createObjectURL(audioBlob);
+        
+        audioRef.current.src = audioUrl;
+        console.log('🎯 Audio source set, attempting playback...');
+        
+        // Setup visualization before playing
+        if (!analyserRef.current) {
+          setupAudioVisualization(audioRef.current);
+        }
+        
+        setIsAISpeaking(true);
+        
+        // Add event listeners
+        audioRef.current.onended = () => {
+          console.log('🎵 Audio playback ended');
+          setIsAISpeaking(false);
+          stopVisualization();
+        };
+        
+        audioRef.current.onerror = () => {
+          console.error('❌ Audio playback error');
+          setIsAISpeaking(false);
+          stopVisualization();
+        };
+        
+        try {
+          await audioRef.current.play();
+          console.log('✅ Audio playback started successfully!');
+        } catch (playError) {
+          console.error('❌ Playback error:', playError);
+          setIsAISpeaking(false);
+          stopVisualization();
+          alert('Audio playback failed. Please check browser permissions or click to play manually.');
+        }
+      } else {
+        // JSON response (might have base64 audio or error)
+        const data = await response.json();
+        console.log('📥 TTS response:', data.status);
+        
+        if (data.status === 'success' && data.audio_response) {
+          // Decode base64 audio and play
+          console.log('🔓 Decoding base64 audio...');
+          const audioData = atob(data.audio_response);
+          const arrayBuffer = new ArrayBuffer(audioData.length);
+          const uint8Array = new Uint8Array(arrayBuffer);
+          
+          for (let i = 0; i < audioData.length; i++) {
+            uint8Array[i] = audioData.charCodeAt(i);
+          }
+          
+          const audioBlob = new Blob([uint8Array], { type: 'audio/wav' });
+          console.log('🎵 Decoded audio blob size:', audioBlob.size, 'bytes');
+          const audioUrl = URL.createObjectURL(audioBlob);
+          
+          audioRef.current.src = audioUrl;
+          console.log('🎯 Audio source set, attempting playback...');
+          
+          // Setup visualization before playing
+          if (!analyserRef.current) {
+            setupAudioVisualization(audioRef.current);
+          }
+          
+          setIsAISpeaking(true);
+          
+          // Add event listeners
+          audioRef.current.onended = () => {
+            console.log('🎵 Audio playback ended');
+            setIsAISpeaking(false);
+            stopVisualization();
+          };
+          
+          audioRef.current.onerror = () => {
+            console.error('❌ Audio playback error');
+            setIsAISpeaking(false);
+            stopVisualization();
+          };
+          
+          try {
+            await audioRef.current.play();
+            console.log('✅ Base64 audio playback started successfully!');
+          } catch (playError) {
+            console.error('❌ Playback error:', playError);
+            setIsAISpeaking(false);
+            stopVisualization();
+            alert('Audio playback failed. Please check browser permissions or click to play manually.');
+          }
+        } else {
+          console.log('⚠️ No audio in response:', data.status, data.message || data.text);
+        }
       }
     } catch (error) {
-      console.error('TTS playback failed:', error);
+      console.error('❌ TTS playback failed:', error);
     }
   };
 
@@ -554,6 +706,37 @@ export default function VoicePage() {
           </div>
         )}
 
+        {/* AI Audio Visualizer */}
+        <div className={`mt-6 rounded-lg overflow-hidden transition-all duration-300 ${
+          isAISpeaking ? 'shadow-lg shadow-blue-500/50' : 'opacity-50'
+        }`}>
+          <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-white font-semibold flex items-center">
+                🔊 AI Voice Assistant
+                {isAISpeaking && (
+                  <span className="ml-3 flex items-center">
+                    <span className="animate-pulse w-2 h-2 bg-green-400 rounded-full mr-2"></span>
+                    <span className="text-sm text-green-200">Speaking...</span>
+                  </span>
+                )}
+              </h3>
+            </div>
+            <canvas
+              ref={canvasRef}
+              width={800}
+              height={200}
+              className="w-full rounded-lg bg-gradient-to-br from-slate-900 to-slate-800"
+              style={{ maxHeight: '200px' }}
+            />
+            <p className="text-blue-100 text-xs mt-2 text-center">
+              {isAISpeaking 
+                ? '🎵 Real-time audio frequency visualization' 
+                : '⏸️ Waiting for AI response...'}
+            </p>
+          </div>
+        </div>
+
         {/* Audio File Upload */}
         <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
           <input
@@ -645,6 +828,9 @@ export default function VoicePage() {
           </div>
         </div>
       )}
+
+      {/* Hidden audio element for playback */}
+      <audio ref={audioRef} style={{ display: 'none' }} />
 
       {/* Voice AI Architecture */}
       <div className="bg-gray-50 rounded-lg p-6 mt-6">
