@@ -147,58 +147,124 @@ export default function VoicePage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
-          sampleRate: 16000,
-          channelCount: 1,
+          sampleRate: 16000,  // Use 16kHz for better speech recognition
+          channelCount: 1,    // Mono audio
           echoCancellation: true,
           noiseSuppression: true
         } 
       });
       
-      // Try to use WAV format if supported, otherwise fallback to webm
-      const options: MediaRecorderOptions = {};
-      if (MediaRecorder.isTypeSupported('audio/wav')) {
-        options.mimeType = 'audio/wav';
-      } else if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-        options.mimeType = 'audio/webm;codecs=opus';
-      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-        options.mimeType = 'audio/webm';
-      }
+      // Use Web Audio API to convert to WAV format
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
       
-      console.log('Using MIME type:', options.mimeType || 'default');
+      const audioChunks: Float32Array[] = [];
       
-      const mediaRecorder = new MediaRecorder(stream, options);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (event) => {
-        console.log('Audio data chunk received:', event.data.size, 'bytes');
-        audioChunksRef.current.push(event.data);
+      processor.onaudioprocess = (event) => {
+        const inputData = event.inputBuffer.getChannelData(0);
+        audioChunks.push(new Float32Array(inputData));
       };
-
-      mediaRecorder.onstop = async () => {
-        console.log('Recording stopped, processing audio...');
-        const mimeType = options.mimeType || 'audio/webm';
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        console.log('Created audio blob:', audioBlob.size, 'bytes, type:', audioBlob.type);
-        await processRecordedAudio(audioBlob);
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      // Record in chunks for better compatibility
-      mediaRecorder.start(1000); // 1 second chunks
+      
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      
+      console.log('✅ Recording started with Web Audio API (16kHz mono WAV)');
       setIsRecording(true);
-      console.log('Recording started...');
+      
+      // Store references for stopping
+      (window as any).audioContext = audioContext;
+      (window as any).audioChunks = audioChunks;
+      (window as any).audioStream = stream;
+      
     } catch (error) {
       console.error('Microphone access error:', error);
       alert(`Error accessing microphone: ${error}`);
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+  const stopRecording = async () => {
+    if (!isRecording) return;
+    
+    setIsRecording(false);
+    
+    try {
+      // Get audio data from Web Audio API
+      const audioChunks = (window as any).audioChunks;
+      const audioContext = (window as any).audioContext;
+      const stream = (window as any).audioStream;
+      
+      if (!audioChunks || audioChunks.length === 0) {
+        console.error('No audio data recorded');
+        return;
+      }
+      
+      // Combine all audio chunks
+      const totalLength = audioChunks.reduce((acc: number, chunk: Float32Array) => acc + chunk.length, 0);
+      const combinedAudio = new Float32Array(totalLength);
+      let offset = 0;
+      
+      for (const chunk of audioChunks) {
+        combinedAudio.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
+      console.log(`🎵 Recorded ${combinedAudio.length} audio samples`);
+      
+      // Convert Float32Array to WAV format
+      const wavBuffer = float32ArrayToWav(combinedAudio, 16000);
+      const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+      
+      console.log(`✅ Created WAV blob: ${wavBlob.size} bytes`);
+      
+      // Clean up
+      stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      audioContext.close();
+      
+      // Process the WAV audio
+      await processRecordedAudio(wavBlob);
+      
+    } catch (error) {
+      console.error('Error stopping recording:', error);
     }
+  };
+
+  // Helper function to convert Float32Array to WAV format
+  const float32ArrayToWav = (float32Array: Float32Array, sampleRate: number): ArrayBuffer => {
+    const length = float32Array.length;
+    const buffer = new ArrayBuffer(44 + length * 2);
+    const view = new DataView(buffer);
+    
+    // WAV header
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, length * 2, true);
+    
+    // Convert float samples to 16-bit PCM
+    let offset = 44;
+    for (let i = 0; i < length; i++) {
+      const sample = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(offset, sample * 0x7FFF, true);
+      offset += 2;
+    }
+    
+    return buffer;
   };
 
   const processRecordedAudio = async (audioBlob: Blob) => {
